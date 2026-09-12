@@ -1,0 +1,6 @@
+**/target
+**/Cargo.lock
+**/.idea
+**/.vs
+**/.vscode
+**/.zed

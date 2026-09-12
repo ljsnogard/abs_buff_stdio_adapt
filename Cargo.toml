@@ -1,0 +1,21 @@
+[package]
+name = "abs_buff_stdio_adapt"
+version = "0.1.0"
+edition = "2024"
+description = "Adapter to make std::io::{Read, Write} fit for abs_buff TrBuffRead/TrBuffWrite."
+license = "MIT/Apache-2.0"
+
+[dependencies]
+abs_art-bridge = { version = "0.2.2", default-features = false }
+abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev/0.3.0" }
+
+# 测试专用的依赖（不影响库本身）：
+# - `abs_art-bridge` 的 backend-compio：适配器内部的 `block_on` 使用 compio
+#   后端；按 abs_art-bridge 的设计，后端由"最终的二进制"在各自的 Cargo.toml
+#   里启用，这里作为 dev-dependency 启用。
+# - `compio`：提供 `#[compio::test]` 属性，让测试运行在 compio 运行时上下文中。
+# - `buffex`：circular buff 管道，作为"异步数据流"的测试载体（实现 abs_buff 的
+#   TrBuffRead / TrBuffWrite，空/满时会真实地 Pending 等待对端）。
+[dev-dependencies]
+abs_art-bridge = { version = "0.2.2", default-features = false, features = ["backend-compio"] }
+compio = { version = "0.19.*", features = ["fs", "macros", "time"] }
