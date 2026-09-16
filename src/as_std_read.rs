@@ -51,7 +51,6 @@ where
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>
     where
         <R as TrBuffRead>::Err: core::error::Error,
-        C: TrCancellationToken + Clone,
     {
         let mut c = 0usize;
         let buf_len = buf.len();
@@ -69,7 +68,7 @@ where
             let read_fut = self
                 .buff_r_
                 .read_async(&demand)
-                .may_cancel_with(&mut *self.cancel_)
+                .may_cancel_with(self.cancel_.child_token())
                 .into_future();
             let mut r_res = Rt::block_on(read_fut);
             if let Option::Some(segm) = r_res.as_mut().pick_left() {

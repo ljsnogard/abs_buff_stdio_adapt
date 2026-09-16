@@ -4,6 +4,9 @@ mod as_std_write;
 pub use as_std_read::AsStdRead;
 pub use as_std_write::AsStdWrite;
 
+#[cfg(test)]
+mod tests_;
+
 pub mod x_deps {
     pub use abs_buff;
 }

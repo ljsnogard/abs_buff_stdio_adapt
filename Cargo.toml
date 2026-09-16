@@ -18,4 +18,6 @@ abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev
 #   TrBuffRead / TrBuffWrite，空/满时会真实地 Pending 等待对端）。
 [dev-dependencies]
 abs_art-bridge = { version = "0.2.2", default-features = false, features = ["backend-compio"] }
+abs_buff-testkit = { git = "https://gitee.com/lino_snsalias/abs_buff-testkit.git" }
+buffex = { git = "https://gitee.com/lino_snsalias/buffex.git", branch = "dev/0.3.0" }
 compio = { version = "0.19.*", features = ["fs", "macros", "time"] }

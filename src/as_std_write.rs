@@ -53,7 +53,6 @@ where
     pub fn write(&mut self, buf: &[u8]) -> io::Result<usize>
     where
         <W as TrBuffWrite>::Err: core::error::Error,
-        C: TrCancellationToken + Clone,
     {
         let mut c = 0usize;
         let buf_len = buf.len();
@@ -70,7 +69,7 @@ where
             let fut = self
                 .buff_w_
                 .write_async(&demand)
-                .may_cancel_with(&mut *self.cancel_)
+                .may_cancel_with(self.cancel_.child_token())
                 .into_future();
             let mut w_res = Rt::block_on(fut);
             if let Option::Some(segm) = w_res.as_mut().pick_left() {
