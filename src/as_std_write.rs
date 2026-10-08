@@ -39,7 +39,7 @@ where
     C: TrCancellationToken,
 {
     buff_w_: &'a mut W,
-    cancel_: &'a mut C,
+    cancel_: C,
 }
 
 type Rt = Runtime<{ BLOCK_ON } >;
@@ -49,7 +49,7 @@ where
     W: TrBuffWrite + TrProducerState,
     C: TrCancellationToken,
 {
-    pub const fn new(w: &'a mut W, cancel: &'a mut C) -> Self {
+    pub const fn new(w: &'a mut W, cancel: C) -> Self {
         AsStdWrite {
             buff_w_: w,
             cancel_: cancel,
@@ -131,14 +131,14 @@ where
     W: TrBuffWrite + TrProducerState,
 {
     pub fn uncancellable(w: &'a mut W) -> Self {
-        Self::new(w, NonCancellableToken::shared_mut())
+        Self::new(w, NonCancellableToken::new())
     }
 }
 
 impl<'a, W, C> io::Write for AsStdWrite<'a, W, C>
 where
     W: TrBuffWrite + TrProducerState,
-    C: TrCancellationToken + Clone,
+    C: TrCancellationToken,
 {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

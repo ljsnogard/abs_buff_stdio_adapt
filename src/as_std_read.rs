@@ -34,7 +34,7 @@ where
     C: TrCancellationToken,
 {
     buff_r_: &'a mut R,
-    cancel_: &'a mut C,
+    cancel_: C,
 }
 
 type Rt = Runtime<{ BLOCK_ON }>;
@@ -44,7 +44,7 @@ where
     R: TrBuffRead<u8> + TrConsumerState,
     C: TrCancellationToken,
 {
-    pub const fn new(r: &'a mut R, cancel: &'a mut C) -> Self {
+    pub const fn new(r: &'a mut R, cancel: C) -> Self {
         AsStdRead {
             buff_r_: r,
             cancel_: cancel,
@@ -134,14 +134,14 @@ where
     R: TrBuffRead<u8> + TrConsumerState,
 {
     pub fn uncancellable(r: &'a mut R) -> Self {
-        Self::new(r, NonCancellableToken::shared_mut())
+        Self::new(r, NonCancellableToken::new())
     }
 }
 
 impl<'a, R, C> io::Read for AsStdRead<'a, R, C>
 where
     R: TrBuffRead<u8> + TrConsumerState,
-    C: TrCancellationToken + Clone,
+    C: TrCancellationToken,
 {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {

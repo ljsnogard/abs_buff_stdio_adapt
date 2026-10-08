@@ -563,8 +563,8 @@ async fn cb_read_eof_returns_zero() {
 #[compio::test]
 async fn cb_read_cancelled_token_returns_without_waiting() {
     let (_tx, mut rx) = make_cb_pair(16);
-    let mut token = CancelledToken::new();
-    let mut reader = AsStdRead::new(&mut rx, &mut token);
+    let token = CancelledToken::new();
+    let mut reader = AsStdRead::new(&mut rx, token);
 
     let mut buf = [0u8; 8];
     let t0 = Instant::now();
@@ -710,8 +710,8 @@ async fn cb_write_cancelled_token_returns_without_waiting() {
     cb_write_all(&mut tx, &[0x5Au8; CAP]); // 填满，后续写必然要等空间
 
     let mut sink = ConservativeTx(tx);
-    let mut token = CancelledToken::new();
-    let mut writer = AsStdWrite::new(&mut sink, &mut token);
+    let token = CancelledToken::new();
+    let mut writer = AsStdWrite::new(&mut sink, token);
 
     let t0 = Instant::now();
     let n = writer
