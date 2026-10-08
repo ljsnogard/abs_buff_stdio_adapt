@@ -37,8 +37,6 @@ where
     cancel_: C,
 }
 
-type Rt = Runtime<{ BLOCK_ON }>;
-
 impl<'a, R, C> AsStdRead<'a, R, C>
 where
     R: TrBuffRead<u8> + TrConsumerState,
@@ -56,6 +54,13 @@ where
     where
         <R as TrBuffTryRead>::Err: core::error::Error,
     {
+        // `abs_art` 0.3.0 起运行时是**值**：先在当前后端上下文里取到它，再在它上面
+        // 调 `block_on`（旧版的 `Runtime::<CAPS>::block_on` 关联函数已不存在）。
+        //
+        // 惰性获取：空缓冲 / 已取消 / EOF 这些**不需要等待**的路径会直接返回，不该
+        // 要求调用方处于运行时上下文——`Runtime::current()` 在运行时上下文之外会
+        // panic，而旧实现只在真正要驱动异步操作时才触达运行时。
+        let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
@@ -87,7 +92,8 @@ where
                 .read_async(&demand)
                 .may_cancel_with(self.cancel_.child_token())
                 .into_future();
-            let mut r_res = Rt::block_on(read_fut);
+            let rt = rt.get_or_insert_with(Runtime::<{ BLOCK_ON }>::current);
+            let mut r_res = rt.block_on(read_fut);
             if let Option::Some(segm) = r_res.as_mut().pick_left() {
                 // `as_segm_ref` yields the concrete `SegmRef` over the
                 // remaining items (the borrowed segment's buffer *is* the

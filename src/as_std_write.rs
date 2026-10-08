@@ -42,8 +42,6 @@ where
     cancel_: C,
 }
 
-type Rt = Runtime<{ BLOCK_ON } >;
-
 impl<'a, W, C> AsStdWrite<'a, W, C>
 where
     W: TrBuffWrite + TrProducerState,
@@ -61,6 +59,10 @@ where
     where
         <W as TrBuffTryWrite>::Err: core::error::Error,
     {
+        // 同 `AsStdRead`：`abs_art` 0.3.0 起运行时是**值**，先取当前后端的运行时值，
+        // 再在它上面调 `block_on`。惰性获取的原因也相同：空载荷 / 已取消 / 满环
+        // 这些路径直接返回，不该要求调用方处于运行时上下文。
+        let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
@@ -91,7 +93,8 @@ where
                 .write_async(&demand)
                 .may_cancel_with(self.cancel_.child_token())
                 .into_future();
-            let mut w_res = Rt::block_on(fut);
+            let rt = rt.get_or_insert_with(Runtime::<{ BLOCK_ON }>::current);
+            let mut w_res = rt.block_on(fut);
             if let Option::Some(segm) = w_res.as_mut().pick_left() {
                 // `as_segm_mut` yields the concrete `SegmMut` over the
                 // remaining free items (the borrowed segment's buffer *is*

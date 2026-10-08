@@ -724,3 +724,35 @@ async fn cb_write_cancelled_token_returns_without_waiting() {
         "已取消时 write 不得进入等待：耗时 {elapsed:?}"
     );
 }
+
+/// 目的：证明「不需要等待」的路径不会去取运行时值——空缓冲的 `read` / `write`
+/// 必须直接返回 `Ok(0)`，即便调用方**不在**任何异步运行时上下文里。
+///
+/// 测试方法：
+/// 1. 用普通 `#[test]`（而不是 `#[compio::test]`），因此当前线程没有 compio
+///    运行时上下文；
+/// 2. 分别对 `AsStdRead` 传入长度为 0 的缓冲、对 `AsStdWrite` 传入空切片；
+///
+/// 通过依据：
+/// - 两次调用都返回 `Ok(0)` 且不 panic。`abs_art` 0.3.0 的运行时值入口
+///   `Runtime::current()` 在运行时上下文之外会 panic，因此适配器若在方法开头
+///   无条件取运行时值，本用例必然失败（这正是「惰性获取运行时值」的回归保护）。
+#[test]
+fn empty_ops_do_not_require_runtime_context() {
+    let (mut tx, mut rx) = make_cb_pair(8);
+
+    let mut reader = AsStdRead::uncancellable(&mut rx);
+    let mut empty: [u8; 0] = [];
+    assert_eq!(
+        reader.read(&mut empty).expect("空缓冲的 read 不应失败"),
+        0,
+        "空缓冲的 read 必须直接返回 Ok(0)"
+    );
+
+    let mut writer = AsStdWrite::uncancellable(&mut tx);
+    assert_eq!(
+        writer.write(&[]).expect("空载荷的 write 不应失败"),
+        0,
+        "空载荷的 write 必须直接返回 Ok(0)"
+    );
+}
