@@ -1,9 +1,13 @@
-use std::{io, mem::MaybeUninit, string::ToString};
+use std::{
+    io,
+    mem::MaybeUninit,
+    string::ToString,
+};
 
 use abs_art_bridge::{BLOCK_ON, Runtime, TrBlockOn};
 use abs_buff::{
     Demand, TrBuffRead, TrBuffTryRead,
-    buffer::TrBuffSegmRef,
+    buffer::{TrConsumerState, TrBuffSegmRef},
     x_deps::abs_cancel
 };
 use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
@@ -26,7 +30,7 @@ use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
 /// is only surfaced by the call that makes no progress.
 pub struct AsStdRead<'a, R, C = NonCancellableToken>
 where
-    R: TrBuffRead,
+    R: TrBuffRead<u8> + TrConsumerState,
     C: TrCancellationToken,
 {
     buff_r_: &'a mut R,
@@ -37,7 +41,7 @@ type Rt = Runtime<{ BLOCK_ON }>;
 
 impl<'a, R, C> AsStdRead<'a, R, C>
 where
-    R: TrBuffRead,
+    R: TrBuffRead<u8> + TrConsumerState,
     C: TrCancellationToken,
 {
     pub const fn new(r: &'a mut R, cancel: &'a mut C) -> Self {
@@ -50,18 +54,31 @@ where
     /// Read as many bytes as the source currently offers into `buf`.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>
     where
-        <R as TrBuffRead>::Err: core::error::Error,
+        <R as TrBuffTryRead>::Err: core::error::Error,
     {
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
-            if c >= buf_len
-                || self.buff_r_.is_drained_closing()
-                || self.cancel_.is_cancelled()
-            {
+            // 源「已无可读数据且生产端已关闭」即 EOF：std 惯例下应当返回已读量，
+            // 而不是继续等待。`consumer_state()` 是 `abs_buff` 取代旧版
+            // `TrBuffRead::is_drained_closing()` 的状态查询，返回
+            // `(可读数量, 生产端是否关闭)`；`None`（该实现不报告状态）保守地**不**
+            // 当作 EOF——适配器的设计意图是等待异步数据，误判成 EOF 会让 `read`
+            // 在第一轮 poll 就提前退出。
+            let drained_closing = self
+                .buff_r_
+                .consumer_state()
+                .is_some_and(|(count, closed)| count == 0 && closed);
+            if c >= buf_len || drained_closing || self.cancel_.is_cancelled() {
                 return Result::Ok(c);
             }
-            let demand = Demand::less_than(buf_len - c);
+            // 「最多再要 `buf_len - c` 个」。注意新版 `abs_buff` 里
+            // `Demand::less_than(n)` 的语义是**严格小于 n**（旧版是「至多 n 个」，
+            // 含端点），若照搬旧写法，剩余 1 个字节时会构造出 `{0}` 这个无法推进
+            // 任何数据的请求，让循环空转；`no_more_than` 才是与旧版 `less_than`
+            // 等价的「至多 n 个」。下限交给段实现自行判定（源为空时会返回
+            // `Drained` 错误，由下面的错误分支处理）。
+            let demand = Demand::no_more_than(buf_len - c);
             // `may_cancel_with` 把借用的异步操作转成可取消 future，其输出类型是
             // 具体的 `SomeOf<SegmRef, Err>`（`TrBuffRead` 的 `ReadAsync` 只是
             // `TrMayCancel`，直接 `.into_future()` 的输出是无法归一化的投影类型）。
@@ -114,7 +131,7 @@ where
 
 impl<'a, R> AsStdRead<'a, R, NonCancellableToken>
 where
-    R: TrBuffTryRead,
+    R: TrBuffRead<u8> + TrConsumerState,
 {
     pub fn uncancellable(r: &'a mut R) -> Self {
         Self::new(r, NonCancellableToken::shared_mut())
@@ -123,7 +140,7 @@ where
 
 impl<'a, R, C> io::Read for AsStdRead<'a, R, C>
 where
-    R: TrBuffTryRead,
+    R: TrBuffRead<u8> + TrConsumerState,
     C: TrCancellationToken + Clone,
 {
     #[inline]

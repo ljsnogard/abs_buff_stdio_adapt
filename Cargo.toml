@@ -7,17 +7,27 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 abs_art-bridge = { version = "0.2.2", default-features = false }
-abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev/0.3.0" }
+# abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev/0.3.0" }
+abs_buff = { path = "../abs_buff" }
 
 # 测试专用的依赖（不影响库本身）：
 # - `abs_art-bridge` 的 backend-compio：适配器内部的 `block_on` 使用 compio
 #   后端；按 abs_art-bridge 的设计，后端由"最终的二进制"在各自的 Cargo.toml
 #   里启用，这里作为 dev-dependency 启用。
 # - `compio`：提供 `#[compio::test]` 属性，让测试运行在 compio 运行时上下文中。
-# - `buffex`：circular buff 管道，作为"异步数据流"的测试载体（实现 abs_buff 的
-#   TrBuffRead / TrBuffWrite，空/满时会真实地 Pending 等待对端）。
+# - `buffex`：SPSC 环形管道（`buffex::ring`）作为"异步数据流"的测试载体（实现
+#   abs_buff 的 TrBuffRead / TrBuffWrite，空/满时会真实地 Pending 等待对端）。
 [dev-dependencies]
 abs_art-bridge = { version = "0.2.2", default-features = false, features = ["backend-compio"] }
 abs_buff-testkit = { git = "https://gitee.com/lino_snsalias/abs_buff-testkit.git" }
 buffex = { git = "https://gitee.com/lino_snsalias/buffex.git", branch = "dev/0.3.0" }
 compio = { version = "0.19.*", features = ["fs", "macros", "time"] }
+
+# `buffex` 与 `abs_buff-testkit` 都以上游 git 源的 `abs_buff` 为依赖，而本 crate
+# 以本地 path 依赖 `abs_buff`（见上）。若不在此把该 git 源替换成本地路径，Cargo
+# 会把两者当成**两个不同的 crate 实例**：`buffex` 的 `Ring` 实现的是 git 版
+# `abs_buff` 的 `TrBuffRead` / `TrBuffWrite`，无法与本 crate 使用的 path 版互操作
+# （`the trait bound ... is not satisfied` 并提示存在多个 abs_buff 版本）。
+# 这正是 `abs_buff-testkit` 文档给出的本地联调方式。
+[patch."https://gitee.com/lino_snsalias/abs_buff.git"]
+abs_buff = { path = "../abs_buff" }

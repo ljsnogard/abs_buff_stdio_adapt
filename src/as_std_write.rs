@@ -5,7 +5,7 @@ use std::{io, string::ToString};
 use abs_art_bridge::{BLOCK_ON, Runtime, TrBlockOn};
 use abs_buff::{
     Demand, TrBuffTryWrite, TrBuffWrite,
-    buffer::TrBuffSegmMut,
+    buffer::{TrBuffSegmMut, TrProducerState},
     x_deps::abs_cancel,
 };
 use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
@@ -21,14 +21,21 @@ use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
 /// per-piece reclaim granularity). Nothing is copied through an intermediate
 /// buffer.
 ///
-/// The loop stops when `buf` is exhausted, the sink is blocked, or the
+/// The loop stops when `buf` is exhausted, the sink is full, or the
 /// cancellation token is signalled. Following the std convention, an error
 /// reported by `try_write` (e.g. the sink being stuffed) is deferred: if
 /// anything was already written it is returned first, and the error is only
 /// surfaced by the call that makes no progress.
+///
+/// Being a `std::io::Write`, a call does not wait for room to become
+/// available: as soon as the sink reports no free space it returns the amount
+/// written so far and lets the caller retry — waiting for the peer is the
+/// consumer's business. [`TrProducerState`] is what makes that check possible
+/// (`is_stuffed_closing` in the previous `abs_buff` API); a sink that reports
+/// no state (`None`) falls back to the async wait inside `write_async`.
 pub struct AsStdWrite<'a, W, C = NonCancellableToken>
 where
-    W: TrBuffWrite,
+    W: TrBuffWrite + TrProducerState,
     C: TrCancellationToken,
 {
     buff_w_: &'a mut W,
@@ -39,7 +46,7 @@ type Rt = Runtime<{ BLOCK_ON } >;
 
 impl<'a, W, C> AsStdWrite<'a, W, C>
 where
-    W: TrBuffWrite,
+    W: TrBuffWrite + TrProducerState,
     C: TrCancellationToken,
 {
     pub const fn new(w: &'a mut W, cancel: &'a mut C) -> Self {
@@ -52,18 +59,31 @@ where
     /// Write as many bytes from `buf` as the sink currently accepts.
     pub fn write(&mut self, buf: &[u8]) -> io::Result<usize>
     where
-        <W as TrBuffWrite>::Err: core::error::Error,
+        <W as TrBuffTryWrite>::Err: core::error::Error,
     {
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
-            if c >= buf_len
-                || self.buff_w_.is_stuffed_closing()
-                || self.cancel_.is_cancelled()
-            {
+            // 与旧版 `TrBuffWrite::is_stuffed_closing()` 等价：sink 已满（无可用
+            // 空间）或对端已关闭时，本次不可能再写出任何字节，按 std 惯例立刻返回
+            // 已写量、由调用方稍后重试——适配器**不得**在这里进入 `write_async`
+            // 的等待路径，否则 `std::io::Write` 就变成了阻塞写（「强制等待空间」
+            // 的场景由测试里的 `ConservativeTx` 单独覆盖）。
+            // `producer_state()` 返回 `(可用空间, 对端是否关闭)`；`None`（该实现
+            // 不报告状态）保守地不当作不可写，交给 `write_async` 决定。
+            let stalled_closing = self
+                .buff_w_
+                .producer_state()
+                .is_some_and(|(free, closed)| free == 0 || closed);
+            if c >= buf_len || stalled_closing || self.cancel_.is_cancelled() {
                 return Result::Ok(c);
             }
-            let demand = Demand::less_than(buf_len - c);
+            // 「最多再写 `buf_len - c` 个」。注意新版 `abs_buff` 里
+            // `Demand::less_than(n)` 的语义是**严格小于 n**（旧版是「至多 n 个」，
+            // 含端点），若照搬旧写法，剩余 1 个字节时会构造出 `{0}` 这个借不到任何
+            // 空间的请求（`Ring` 会直接 `debug_assert!(take > 0)` 失败）；
+            // `no_more_than` 才是与旧版 `less_than` 等价的「至多 n 个」。
+            let demand = Demand::no_more_than(buf_len - c);
             // 同 `AsStdRead`：`may_cancel_with` 的输出是具体的
             // `SomeOf<SegmMut, Err>`，且让等待过程真正可被取消。
             let fut = self
@@ -108,7 +128,7 @@ where
 
 impl<'a, W> AsStdWrite<'a, W, NonCancellableToken>
 where
-    W: TrBuffTryWrite,
+    W: TrBuffWrite + TrProducerState,
 {
     pub fn uncancellable(w: &'a mut W) -> Self {
         Self::new(w, NonCancellableToken::shared_mut())
@@ -117,7 +137,7 @@ where
 
 impl<'a, W, C> io::Write for AsStdWrite<'a, W, C>
 where
-    W: TrBuffTryWrite,
+    W: TrBuffWrite + TrProducerState,
     C: TrCancellationToken + Clone,
 {
     #[inline]
