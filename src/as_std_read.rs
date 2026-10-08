@@ -7,7 +7,8 @@ use std::{
 use abs_art_bridge::{BLOCK_ON, Runtime, TrBlockOn};
 use abs_buff::{
     Demand, TrBuffRead, TrBuffTryRead,
-    buffer::{TrConsumerState, TrBuffSegmRef},
+    error::{ReadErrTag, TrTaggedError},
+    buffer::TrBuffSegmRef,
     x_deps::abs_cancel
 };
 use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
@@ -30,7 +31,7 @@ use abs_cancel::{NonCancellableToken, TrCancellationToken, TrMayCancel};
 /// is only surfaced by the call that makes no progress.
 pub struct AsStdRead<'a, R, C = NonCancellableToken>
 where
-    R: TrBuffRead<u8> + TrConsumerState,
+    R: TrBuffRead<u8>,
     C: TrCancellationToken,
 {
     buff_r_: &'a mut R,
@@ -39,7 +40,7 @@ where
 
 impl<'a, R, C> AsStdRead<'a, R, C>
 where
-    R: TrBuffRead<u8> + TrConsumerState,
+    R: TrBuffRead<u8>,
     C: TrCancellationToken,
 {
     pub const fn new(r: &'a mut R, cancel: C) -> Self {
@@ -54,27 +55,13 @@ where
     where
         <R as TrBuffTryRead>::Err: core::error::Error,
     {
-        // `abs_art` 0.3.0 起运行时是**值**：先在当前后端上下文里取到它，再在它上面
-        // 调 `block_on`（旧版的 `Runtime::<CAPS>::block_on` 关联函数已不存在）。
-        //
-        // 惰性获取：空缓冲 / 已取消 / EOF 这些**不需要等待**的路径会直接返回，不该
-        // 要求调用方处于运行时上下文——`Runtime::current()` 在运行时上下文之外会
-        // panic，而旧实现只在真正要驱动异步操作时才触达运行时。
+        // 惰性获取运行时值：不需要等待的路径（空缓冲 / 已取消 / EOF）直接返回，
+        // 不该要求调用方处于运行时上下文。
         let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
-            // 源「已无可读数据且生产端已关闭」即 EOF：std 惯例下应当返回已读量，
-            // 而不是继续等待。`consumer_state()` 是 `abs_buff` 取代旧版
-            // `TrBuffRead::is_drained_closing()` 的状态查询，返回
-            // `(可读数量, 生产端是否关闭)`；`None`（该实现不报告状态）保守地**不**
-            // 当作 EOF——适配器的设计意图是等待异步数据，误判成 EOF 会让 `read`
-            // 在第一轮 poll 就提前退出。
-            let drained_closing = self
-                .buff_r_
-                .consumer_state()
-                .is_some_and(|(count, closed)| count == 0 && closed);
-            if c >= buf_len || drained_closing || self.cancel_.is_cancelled() {
+            if c >= buf_len || self.cancel_.is_cancelled() {
                 return Result::Ok(c);
             }
             // 「最多再要 `buf_len - c` 个」。注意新版 `abs_buff` 里
@@ -121,10 +108,16 @@ where
                 }
             }
             if let Option::Some(err) = r_res.pick_right() {
-                // The source reported an error (e.g. temporarily drained).
-                // Per the std convention, defer it: if anything was already
-                // read, report that first and let the next call surface the
-                // error; only fail outright when nothing was read.
+                // `Closing` 的定义就是「已无数据且读端已关闭」——正是 `io::Read`
+                // 眼里的 EOF。这里不去问 `TrConsumerState`：那不在 `abs_smux` 的
+                // 契约里（`TrChannelRx` 只承诺 `TrBuffRead`），要求它等于把所有合法
+                // 的复用实现排除在外。
+                if err.err_tag() == ReadErrTag::Closing {
+                    eprintln!("[dbg-read] Closing，已读 {c} 字节 → 当作 EOF");
+                    return Result::Ok(c);
+                }
+                eprintln!("[dbg-read] 错误 tag={:?}，已读 {c} 字节", err.err_tag());
+                // 其它错误按 std 惯例延后：已经读到的先交出去，错误留给下一次调用。
                 if c > 0 {
                     return Result::Ok(c);
                 }
@@ -137,7 +130,7 @@ where
 
 impl<'a, R> AsStdRead<'a, R, NonCancellableToken>
 where
-    R: TrBuffRead<u8> + TrConsumerState,
+    R: TrBuffRead<u8>,
 {
     pub fn uncancellable(r: &'a mut R) -> Self {
         Self::new(r, NonCancellableToken::new())
@@ -146,7 +139,7 @@ where
 
 impl<'a, R, C> io::Read for AsStdRead<'a, R, C>
 where
-    R: TrBuffRead<u8> + TrConsumerState,
+    R: TrBuffRead<u8>,
     C: TrCancellationToken,
 {
     #[inline]

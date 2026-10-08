@@ -6,6 +6,9 @@ description = "Adapter to make std::io::{Read, Write} fit for abs_buff TrBuffRea
 license = "MIT/Apache-2.0"
 
 [dependencies]
+# 驱动本地队列需要 `TrLocalScope` 与 `SPAWN_LOCAL` 能力标签；`abs_art-bridge` 只转出了
+# `Runtime` / `TrBlockOn` 一族，没有转出 `TrLocalScope`。
+abs_art = { git = "https://gitee.com/lino_snsalias/abs_art.git", branch = "dev/0.3.0" }
 abs_art-bridge = {
     git = "https://gitee.com/lino_snsalias/abs_art.git",
     branch = "dev/0.3.0",

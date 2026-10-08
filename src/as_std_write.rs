@@ -59,9 +59,8 @@ where
     where
         <W as TrBuffTryWrite>::Err: core::error::Error,
     {
-        // 同 `AsStdRead`：`abs_art` 0.3.0 起运行时是**值**，先取当前后端的运行时值，
-        // 再在它上面调 `block_on`。惰性获取的原因也相同：空载荷 / 已取消 / 满环
-        // 这些路径直接返回，不该要求调用方处于运行时上下文。
+        // 惰性获取运行时值：不需要等待的路径（空载荷 / 已取消 / 满环）直接返回，
+        // 不该要求调用方处于运行时上下文。
         let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
