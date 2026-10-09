@@ -2,95 +2,56 @@
 //!
 //! # 为什么不能用 `TrBlockOn::block_on`
 //!
-//! `abs_art` 的 `run_until` 文档写得很明确：
+//! `abs_buff` 的环是**全被动**的：环里的数据要靠投递在本地队列（tokio 下即
+//! `LocalSet`）上的循环搬进来。而 `TrBlockOn::block_on` **只等待、不驱动本地队列**
+//! （tokio 上它的实现还是 `block_in_place`，在 `LocalSet` 内被 tokio 直接拒绝）。
+//! 于是「在异步任务里同步读一个由本地循环供料的环」这条最普通的用法，用它要么 panic、
+//! 要么把线程占住让队列再也跑不动。
 //!
-//! > 需要阻塞等待时，用运行时值的 [`TrBlockOn::block_on`]，但要清楚它**不驱动本地
-//! > 队列**。……但**不得**在其内部做阻塞驱动：tokio 的 `block_in_place` 在 `LocalSet`
-//! > 内会 panic。
+//! # 本模块的做法：把这件事交回给作用域
 //!
-//! 而 `abs_buff` 的环是**全被动**的：环里的数据要靠投递在本地队列（tokio 下即
-//! `LocalSet`）上的循环搬进来。于是「在异步任务里同步读一个由本地循环供料的环」这条
-//! 最普通的用法，用 `block_on` 要么 panic、要么把线程占住让队列再也跑不动。
+//! 用 [`TrLocalScope::block_on_local`]——「阻塞当前线程直到 future 完成，等待期间持续
+//! 驱动本线程的本地队列」这条语义，由**各后端**按自己的运行时性质兑现：
 //!
-//! # 本模块的做法
+//! | 后端 | 做法 |
+//! | --- | --- |
+//! | tokio | `LocalSet::run_until` 驱动队列 + 纯 park |
+//! | smol | `LocalExecutor::run` 驱动队列 + 纯 park |
+//! | compio | 自己 tick `Runtime::run` + `poll_with` |
 //!
-//! 用 [`TrLocalScope::run_until`] 驱动队列——它**会**推进本线程队列，且**允许嵌套**——
-//! 外层只做「纯 park」的同步等待：不进入任何运行时上下文，唯一职责是别再 poll 最外层
-//! future。队列的推进全交给 `run_until`。
+//! **本 crate 自己选后端**：与 `smux_v1::connection::DefaultRt_` 同一套规则，由
+//! `rt-tokio` / `rt-compio` / `rt-smol` feature **三选一**。
 //!
-//! 两种用法都能工作，因此不需要调用方区分：
+//! 为什么不能像以前那样用 bridge 的裸名：bridge 更新后对「谁是默认」要求显式声明
+//! （`default-backend-*`），而 bridge 自己的 `default = ["default-backend-compio"]`
+//! 始终在线，于是裸名 `Runtime` 在任何装配下都解析成 compio。tokio / smol 装配下
+//! `CompioRuntime::current()` 会直接 panic（「not in a compio runtime」）。
 //!
-//! | 场景 | 本线程队列里有什么 | `run_until` 的作用 |
-//! | --- | --- | --- |
-//! | 连接循环与调用方**同线程** | 连接的读 / 写循环 | 直接驱动它们，把数据喂进环 |
-//! | 连接循环在**别的线程** | 空 | 本线程无事可做，等对端线程把数据喂好并唤醒即可 |
-//!
-//! 可运行的最小验证见 `mptp_cs_demo/examples/local_block_probe.rs`（E1 / E2 成立，E3 panic）。
+//! 各后端的边界（含 tokio 在 `current_thread` 运行时下无法推进非空本地队列这一条）
+//! 见 [`TrLocalScope::block_on_local`] 的文档。
 
-use core::{
-    future::Future,
-    pin::pin,
-    task::{Context, Poll},
-};
-use std::{
-    sync::Arc,
-    task::{Wake, Waker},
-    thread,
-    time::Duration,
-};
+use core::future::Future;
 
 use abs_art::{SPAWN_LOCAL, TrLocalScope};
-use abs_art_bridge::Runtime;
 
-/// 两次 park 之间的最长间隔。
-///
-/// `wake` 走的是 `Thread::unpark`，正常情况下唤醒会立刻把线程叫醒；这个超时只是兜底，
-/// 避免任何一层的唤醒丢失让调用方永久挂住。
-const K_PARK_TICK: Duration = Duration::from_millis(1);
+#[cfg(feature = "rt-tokio")]
+use abs_art_bridge::TokioRuntime as BackendRuntime;
+#[cfg(feature = "rt-smol")]
+use abs_art_bridge::SmolRuntime as BackendRuntime;
+#[cfg(not(any(feature = "rt-tokio", feature = "rt-smol")))]
+use abs_art_bridge::CompioRuntime as BackendRuntime;
 
 /// 在当前线程的本地作用域上驱动 `future` 直到完成。
 ///
 /// # Panics
 ///
-/// 调用点不在所选后端的运行时上下文内时 panic（由 `Runtime::current` 给出文案）。
+/// 调用点不在所选后端的运行时上下文内时 panic（由 `BackendRuntime::current` 给出文案）。
 pub(crate) fn block_on_local_<F>(future: F) -> F::Output
 where
     F: Future,
 {
-    let runtime = Runtime::<{ SPAWN_LOCAL }>::current();
-    let scope = runtime.local_scope();
-    park_on_(scope.run_until(future))
-}
-
-/// 纯 park 的同步执行器：只 poll 给定 future，未就绪就把线程挂起。
-///
-/// 它**不**建立运行时上下文、也**不**接管任何队列——那些是 `run_until` 的事。
-fn park_on_<F>(future: F) -> F::Output
-where
-    F: Future,
-{
-    /// 唤醒 = unpark 当前线程。
-    struct ThreadWaker_(thread::Thread);
-
-    impl Wake for ThreadWaker_ {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-
-    let mut future = pin!(future);
-    let waker = Waker::from(Arc::new(ThreadWaker_(thread::current())));
-    let mut context = Context::from_waker(&waker);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            // `unpark` 有留存语义，晚到的唤醒不会被丢掉；超时兜底的原因见
-            // `K_PARK_TICK` 的说明。
-            Poll::Pending => thread::park_timeout(K_PARK_TICK),
-        }
-    }
+    // 运行时值在需要等待时才取：空缓冲 / 已取消 / EOF 这些不需要等待的路径不会走到
+    // 这里，因此不该要求调用方处于运行时上下文。
+    let runtime = BackendRuntime::<{ SPAWN_LOCAL }>::current();
+    runtime.local_scope().block_on_local(future)
 }

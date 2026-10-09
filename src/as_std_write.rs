@@ -2,7 +2,6 @@ extern crate std;
 
 use std::{io, string::ToString};
 
-use abs_art_bridge::{BLOCK_ON, Runtime, TrBlockOn};
 use abs_buff::{
     Demand, TrBuffTryWrite, TrBuffWrite,
     buffer::{TrBuffSegmMut, TrProducerState},
@@ -59,9 +58,6 @@ where
     where
         <W as TrBuffTryWrite>::Err: core::error::Error,
     {
-        // 惰性获取运行时值：不需要等待的路径（空载荷 / 已取消 / 满环）直接返回，
-        // 不该要求调用方处于运行时上下文。
-        let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
@@ -92,8 +88,8 @@ where
                 .write_async(&demand)
                 .may_cancel_with(self.cancel_.child_token())
                 .into_future();
-            let rt = rt.get_or_insert_with(Runtime::<{ BLOCK_ON }>::current);
-            let mut w_res = rt.block_on(fut);
+            // 同 `AsStdRead`：用本地作用域驱动。
+            let mut w_res = crate::block_on_::block_on_local_(fut);
             if let Option::Some(segm) = w_res.as_mut().pick_left() {
                 // `as_segm_mut` yields the concrete `SegmMut` over the
                 // remaining free items (the borrowed segment's buffer *is*

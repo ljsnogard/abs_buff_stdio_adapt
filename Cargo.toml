@@ -14,16 +14,34 @@ abs_art-bridge = {
     branch = "dev/0.3.0",
     default-features = false,
 }
-# abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev/0.3.0" }
-abs_buff = { path = "../abs_buff" }
+abs_buff = { git = "https://gitee.com/lino_snsalias/abs_buff.git", branch = "dev/0.3.0" }
+# abs_buff = { path = "../abs_buff" }
+
+# 同步等待的语义由 `TrLocalScope::block_on_local` 提供，各后端在自己的 crate 里兑现
+# （tokio / smol 用「驱动队列 + 纯 park」，compio 自己 tick 执行器与 IO）；而
+# 「取哪一个后端的运行时值来拿到作用域」由下面的 `rt-*` feature **三选一**决定——与
+# `smux_v1::connection::DefaultRt_` 同一套规则。
+#
+# **不能**取 bridge 的裸名 `Runtime`：bridge 的缺省后端（compio，
+# `default = ["default-backend-compio"]`）始终在线，裸名在 tokio / smol 装配下仍指向
+# compio，`current()` 在别的上下文里会直接 panic（`mptp_cs_demo` 在 tokio 下的那个 bug）。
+# 因此这里对三个**具名别名**按 feature 选一个。
 
 # 测试专用的依赖（不影响库本身）：
-# - `abs_art-bridge` 的 backend-compio：适配器内部的 `block_on` 使用 compio
+# - `abs_art-bridge` 的 backend-compio：适配器内部的 `block_on` 缺省用 compio
 #   后端；按 abs_art-bridge 的设计，后端由"最终的二进制"在各自的 Cargo.toml
-#   里启用，这里作为 dev-dependency 启用。
+#   里启用。
 # - `compio`：提供 `#[compio::test]` 属性，让测试运行在 compio 运行时上下文中。
 # - `buffex`：SPSC 环形管道（`buffex::ring`）作为"异步数据流"的测试载体（实现
 #   abs_buff 的 TrBuffRead / TrBuffWrite，空/满时会真实地 Pending 等待对端）。
+[features]
+# 缺省 = compio。换后端时由最终二进制 `--no-default-features --features rt-<名字>`：
+# 三个后端**互斥三选一**，多开一个会让 `BackendRuntime` 没有唯一解。
+default = ["rt-compio"]
+rt-compio = ["abs_art-bridge/backend-compio"]
+rt-smol = ["abs_art-bridge/backend-smol"]
+rt-tokio = ["abs_art-bridge/backend-tokio"]
+
 [dev-dependencies]
 # 必须与 `[dependencies]` 用**同一个源**（同一个 git 分支），否则 Cargo 会以
 # 「Dependency 'abs_art-bridge' has different source paths depending on the build
@@ -44,5 +62,16 @@ compio = { version = "0.19.*", features = ["fs", "macros", "time"] }
 # `abs_buff` 的 `TrBuffRead` / `TrBuffWrite`，无法与本 crate 使用的 path 版互操作
 # （`the trait bound ... is not satisfied` 并提示存在多个 abs_buff 版本）。
 # 这正是 `abs_buff-testkit` 文档给出的本地联调方式。
-[patch."https://gitee.com/lino_snsalias/abs_buff.git"]
-abs_buff = { path = "../abs_buff" }
+# [patch."https://gitee.com/lino_snsalias/abs_buff.git"]
+# abs_buff = { path = "../abs_buff" }
+
+# **开发期**：`abs_art` 家族的本地联调。`TrLocalScope::block_on_local`（三段实现）正在
+# 本仓同级的 `abs_art/` 里改，尚未推到 gitee；不重定向的话 Cargo 只会拿到远端旧 commit，
+# 那时本 crate 调用的 `scope.block_on_local(..)` 根本不存在。
+# 这里只列本 crate 依赖图上真正会出现的三个（本 crate + bridge + 测试用的 compio 后端）；
+# 多列未使用的包会让 Cargo 报 "patch was not used in the crate graph"。
+# 推到 gitee 之后可以删除本段。
+# [patch."https://gitee.com/lino_snsalias/abs_art.git"]
+# abs_art = { path = "../abs_art/abs_art" }
+# abs_art-bridge = { path = "../abs_art/abs_art-bridge" }
+# abs_art-compio = { path = "../abs_art/abs_art-compio" }

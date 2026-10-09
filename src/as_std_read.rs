@@ -4,7 +4,6 @@ use std::{
     string::ToString,
 };
 
-use abs_art_bridge::{BLOCK_ON, Runtime, TrBlockOn};
 use abs_buff::{
     Demand, TrBuffRead, TrBuffTryRead,
     error::{ReadErrTag, TrTaggedError},
@@ -55,9 +54,6 @@ where
     where
         <R as TrBuffTryRead>::Err: core::error::Error,
     {
-        // 惰性获取运行时值：不需要等待的路径（空缓冲 / 已取消 / EOF）直接返回，
-        // 不该要求调用方处于运行时上下文。
-        let mut rt: Option<Runtime<{ BLOCK_ON }>> = Option::None;
         let mut c = 0usize;
         let buf_len = buf.len();
         loop {
@@ -79,8 +75,9 @@ where
                 .read_async(&demand)
                 .may_cancel_with(self.cancel_.child_token())
                 .into_future();
-            let rt = rt.get_or_insert_with(Runtime::<{ BLOCK_ON }>::current);
-            let mut r_res = rt.block_on(read_fut);
+            // 用**本地作用域**驱动，而不是 `block_in_place`：后者在 `LocalSet` 的调用栈
+            // 里会被 tokio 直接拒绝，在 current_thread 运行时里同样不可用。
+            let mut r_res = crate::block_on_::block_on_local_(read_fut);
             if let Option::Some(segm) = r_res.as_mut().pick_left() {
                 // `as_segm_ref` yields the concrete `SegmRef` over the
                 // remaining items (the borrowed segment's buffer *is* the
@@ -113,10 +110,8 @@ where
                 // 契约里（`TrChannelRx` 只承诺 `TrBuffRead`），要求它等于把所有合法
                 // 的复用实现排除在外。
                 if err.err_tag() == ReadErrTag::Closing {
-                    eprintln!("[dbg-read] Closing，已读 {c} 字节 → 当作 EOF");
                     return Result::Ok(c);
                 }
-                eprintln!("[dbg-read] 错误 tag={:?}，已读 {c} 字节", err.err_tag());
                 // 其它错误按 std 惯例延后：已经读到的先交出去，错误留给下一次调用。
                 if c > 0 {
                     return Result::Ok(c);
