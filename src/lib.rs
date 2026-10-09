@@ -9,5 +9,6 @@ pub use as_std_write::AsStdWrite;
 mod tests_;
 
 pub mod x_deps {
+    pub use abs_art_facade;
     pub use abs_buff;
 }

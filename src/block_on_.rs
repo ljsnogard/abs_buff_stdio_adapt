@@ -19,39 +19,32 @@
 //! | smol | `LocalExecutor::run` 驱动队列 + 纯 park |
 //! | compio | 自己 tick `Runtime::run` + `poll_with` |
 //!
-//! **本 crate 自己选后端**：与 `smux_v1::connection::DefaultRt_` 同一套规则，由
-//! `rt-tokio` / `rt-compio` / `rt-smol` feature **三选一**。
+//! # 后端从哪来
 //!
-//! 为什么不能像以前那样用 bridge 的裸名：bridge 更新后对「谁是默认」要求显式声明
-//! （`default-backend-*`），而 bridge 自己的 `default = ["default-backend-compio"]`
-//! 始终在线，于是裸名 `Runtime` 在任何装配下都解析成 compio。tokio / smol 装配下
-//! `CompioRuntime::current()` 会直接 panic（「not in a compio runtime」）。
+//! 「取哪一个后端的运行时值」不再由本 crate 决定，而是问门面
+//! [`abs_art_facade::Runtime`]——它是全图唯一决定「当前后端」的地方。下游谁点亮
+//! `abs_art-facade/rt-tokio`，全图（含这里）就都是 tokio；本 crate 一行 feature
+//! 都不用写、也不需要任何别名表。缺省（没人 override）时门面给的是 compio，因此本
+//! crate 单独编译 / 自测同样成立。
 //!
 //! 各后端的边界（含 tokio 在 `current_thread` 运行时下无法推进非空本地队列这一条）
 //! 见 [`TrLocalScope::block_on_local`] 的文档。
 
 use core::future::Future;
 
-use abs_art::{SPAWN_LOCAL, TrLocalScope};
-
-#[cfg(feature = "rt-tokio")]
-use abs_art_bridge::TokioRuntime as BackendRuntime;
-#[cfg(feature = "rt-smol")]
-use abs_art_bridge::SmolRuntime as BackendRuntime;
-#[cfg(not(any(feature = "rt-tokio", feature = "rt-smol")))]
-use abs_art_bridge::CompioRuntime as BackendRuntime;
+use abs_art_facade::{Runtime, SPAWN_LOCAL, TrLocalScope};
 
 /// 在当前线程的本地作用域上驱动 `future` 直到完成。
 ///
 /// # Panics
 ///
-/// 调用点不在所选后端的运行时上下文内时 panic（由 `BackendRuntime::current` 给出文案）。
+/// 调用点不在所选后端的运行时上下文内时 panic（由门面选中的后端的 `current()` 给出文案）。
 pub(crate) fn block_on_local_<F>(future: F) -> F::Output
 where
     F: Future,
 {
     // 运行时值在需要等待时才取：空缓冲 / 已取消 / EOF 这些不需要等待的路径不会走到
     // 这里，因此不该要求调用方处于运行时上下文。
-    let runtime = BackendRuntime::<{ SPAWN_LOCAL }>::current();
+    let runtime = Runtime::<{ SPAWN_LOCAL }>::current();
     runtime.local_scope().block_on_local(future)
 }
